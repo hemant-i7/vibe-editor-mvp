@@ -1,4 +1,3 @@
-use ez_ffmpeg::{FfmpegContext, FfmpegScheduler};
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::process::Command;
@@ -191,18 +190,25 @@ async fn vibe_edit(
     .to_string();
 
   let filter_desc = filters.join(",");
-  let context = FfmpegContext::builder()
-    .input(&input_path)
-    .filter_desc(&filter_desc)
-    .output(&output)
-    .build()
+  let ffmpeg_status = Command::new("ffmpeg")
+    .arg("-y")
+    .arg("-i")
+    .arg(&input_path)
+    .arg("-vf")
+    .arg(filter_desc)
+    .arg("-c:v")
+    .arg("libx264")
+    .arg("-preset")
+    .arg("veryfast")
+    .arg("-c:a")
+    .arg("aac")
+    .arg(&output)
+    .status()
     .map_err(|e| e.to_string())?;
 
-  FfmpegScheduler::new(context)
-    .start()
-    .map_err(|e| e.to_string())?
-    .wait()
-    .map_err(|e| e.to_string())?;
+  if !ffmpeg_status.success() {
+    return Err("FFmpeg failed to render output".to_string());
+  }
 
   sqlx::query(
     "INSERT INTO projects (input_path, output_path, prompt) VALUES (?, ?, ?)",
