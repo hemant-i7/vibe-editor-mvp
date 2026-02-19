@@ -1,7 +1,8 @@
 use ez_ffmpeg::{FfmpegContext, FfmpegScheduler};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::process::Command;
+use std::str::FromStr;
 use tauri::State;
 
 const DB_URL: &str = "sqlite://vibe.db";
@@ -47,7 +48,8 @@ fn ensure_three_filters(mut filters: Vec<String>) -> Vec<String> {
 }
 
 fn watermark_filter() -> String {
-  "drawtext=text='TRIAL':x=16:y=16:fontsize=24:fontcolor=white".to_string()
+  "drawtext=fontfile=FreeSerif.ttf:text='TRIAL':x=16:y=16:fontsize=24:fontcolor=white"
+    .to_string()
 }
 
 fn fallback_filters(prompt: &str) -> Vec<String> {
@@ -56,19 +58,22 @@ fn fallback_filters(prompt: &str) -> Vec<String> {
     vec![
       "setpts=0.85*PTS".to_string(),
       "hue=s=1.25".to_string(),
-      "drawtext=text='VIBE: ENERGETIC':x=16:y=16:fontsize=24:fontcolor=white".to_string(),
+      "drawtext=fontfile=FreeSerif.ttf:text='VIBE: ENERGETIC':x=16:y=16:fontsize=24:fontcolor=white"
+        .to_string(),
     ]
   } else if prompt.contains("chill") || prompt.contains("calm") {
     vec![
       "setpts=1.05*PTS".to_string(),
       "hue=s=0.8".to_string(),
-      "drawtext=text='VIBE: CHILL':x=16:y=16:fontsize=24:fontcolor=white".to_string(),
+      "drawtext=fontfile=FreeSerif.ttf:text='VIBE: CHILL':x=16:y=16:fontsize=24:fontcolor=white"
+        .to_string(),
     ]
   } else {
     vec![
       "setpts=1.0*PTS".to_string(),
       "hue=s=1.0".to_string(),
-      "drawtext=text='VIBE: ACTION':x=16:y=16:fontsize=24:fontcolor=white".to_string(),
+      "drawtext=fontfile=FreeSerif.ttf:text='VIBE: ACTION':x=16:y=16:fontsize=24:fontcolor=white"
+        .to_string(),
     ]
   }
 }
@@ -129,7 +134,8 @@ fn gemini_filters(prompt: &str) -> Result<Vec<String>, String> {
 }
 
 async fn init_db() -> Result<SqlitePool, sqlx::Error> {
-  let pool = SqlitePool::connect(DB_URL).await?;
+  let opts = SqliteConnectOptions::from_str(DB_URL)?;
+  let pool = SqlitePool::connect_with(opts).await?;
   sqlx::query(SCHEMA_SQL).execute(&pool).await?;
   Ok(pool)
 }
