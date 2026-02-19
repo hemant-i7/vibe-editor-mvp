@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
-use tauri::State;
+use tauri::{Manager, State};
 
-const DB_URL: &str = "sqlite://vibe.db";
 const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 
 #[derive(Clone)]
@@ -46,9 +46,46 @@ fn ensure_three_filters(mut filters: Vec<String>) -> Vec<String> {
   filters
 }
 
+fn drawtext_font() -> &'static str {
+  #[cfg(target_os = "macos")]
+  return "fontfile=/System/Library/Fonts/Supplemental/Arial.ttf";
+  #[cfg(not(target_os = "macos"))]
+  return "fontfile=FreeSerif.ttf";
+}
+
 fn watermark_filter() -> String {
-  "drawtext=fontfile=FreeSerif.ttf:text='TRIAL':x=16:y=16:fontsize=24:fontcolor=white"
-    .to_string()
+  format!(
+    "drawtext={}:text='TRIAL':x=16:y=16:fontsize=24:fontcolor=white",
+    drawtext_font()
+  )
+}
+
+fn video_duration_seconds(path: &Path) -> Result<f64, String> {
+  let out = Command::new("ffprobe")
+    .args([
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      path.to_str().unwrap_or(""),
+    ])
+    .output()
+    .map_err(|e| e.to_string())?;
+  if !out.status.success() {
+    return Err(String::from_utf8_lossy(&out.stderr).to_string());
+  }
+  let s = String::from_utf8_lossy(&out.stdout);
+  s.trim().parse::<f64>().map_err(|_| "invalid duration".to_string())
+}
+
+fn wants_overlay(prompt: &str) -> bool {
+  let p = prompt.to_lowercase();
+  p.contains("add animation")
+    || p.contains("animation in between")
+    || p.contains("transparent overlay")
+    || p.contains("overlay")
 }
 
 fn fallback_filters(prompt: &str) -> Vec<String> {
@@ -57,22 +94,19 @@ fn fallback_filters(prompt: &str) -> Vec<String> {
     vec![
       "setpts=0.85*PTS".to_string(),
       "hue=s=1.25".to_string(),
-      "drawtext=fontfile=FreeSerif.ttf:text='VIBE: ENERGETIC':x=16:y=16:fontsize=24:fontcolor=white"
-        .to_string(),
+      format!("drawtext={}:text='VIBE: ENERGETIC':x=16:y=16:fontsize=24:fontcolor=white", drawtext_font()),
     ]
   } else if prompt.contains("chill") || prompt.contains("calm") {
     vec![
       "setpts=1.05*PTS".to_string(),
       "hue=s=0.8".to_string(),
-      "drawtext=fontfile=FreeSerif.ttf:text='VIBE: CHILL':x=16:y=16:fontsize=24:fontcolor=white"
-        .to_string(),
+      format!("drawtext={}:text='VIBE: CHILL':x=16:y=16:fontsize=24:fontcolor=white", drawtext_font()),
     ]
   } else {
     vec![
       "setpts=1.0*PTS".to_string(),
       "hue=s=1.0".to_string(),
-      "drawtext=fontfile=FreeSerif.ttf:text='VIBE: ACTION':x=16:y=16:fontsize=24:fontcolor=white"
-        .to_string(),
+      format!("drawtext={}:text='VIBE: ACTION':x=16:y=16:fontsize=24:fontcolor=white", drawtext_font()),
     ]
   }
 }
@@ -132,8 +166,9 @@ fn gemini_filters(prompt: &str) -> Result<Vec<String>, String> {
   Ok(filters)
 }
 
-async fn init_db() -> Result<SqlitePool, sqlx::Error> {
-  let opts = SqliteConnectOptions::from_str(DB_URL)?;
+async fn init_db(db_path: &PathBuf) -> Result<SqlitePool, sqlx::Error> {
+  let mut opts = SqliteConnectOptions::from_str("sqlite://")?;
+  opts = opts.filename(db_path).create_if_missing(true);
   let pool = SqlitePool::connect_with(opts).await?;
   sqlx::query(SCHEMA_SQL).execute(&pool).await?;
   Ok(pool)
@@ -160,6 +195,7 @@ async fn vibe_edit(
   input_path: String,
   prompt: String,
   license_key: Option<String>,
+  add_overlay: Option<bool>,
   db: State<'_, Db>,
 ) -> Result<VibeEditResult, String> {
   let licensed = if let Some(key) = license_key {
@@ -190,12 +226,12 @@ async fn vibe_edit(
     .to_string();
 
   let filter_desc = filters.join(",");
-  let ffmpeg_status = Command::new("ffmpeg")
+  let ffmpeg_out = Command::new("ffmpeg")
     .arg("-y")
     .arg("-i")
     .arg(&input_path)
     .arg("-vf")
-    .arg(filter_desc)
+    .arg(&filter_desc)
     .arg("-c:v")
     .arg("libx264")
     .arg("-preset")
@@ -203,25 +239,58 @@ async fn vibe_edit(
     .arg("-c:a")
     .arg("aac")
     .arg(&output)
-    .status()
+    .output()
     .map_err(|e| e.to_string())?;
 
-  if !ffmpeg_status.success() {
-    return Err("FFmpeg failed to render output".to_string());
+  if !ffmpeg_out.status.success() {
+    let stderr = String::from_utf8_lossy(&ffmpeg_out.stderr);
+    let msg = if stderr.is_empty() {
+      "FFmpeg failed (no stderr). Check ffmpeg is installed and path is valid."
+        .to_string()
+    } else {
+      format!("FFmpeg failed: {}", stderr.lines().take(5).collect::<Vec<_>>().join(" "))
+    };
+    return Err(msg);
+  }
+
+  let mut final_output = output.clone();
+
+  let run_overlay = add_overlay.unwrap_or_else(|| wants_overlay(&prompt));
+  if run_overlay {
+    let duration_sec = video_duration_seconds(Path::new(&output)).unwrap_or(30.0);
+    let overlay_out = input
+      .with_file_name("vibe_output_overlay.mp4")
+      .to_string_lossy()
+      .to_string();
+    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let script = project_root.join("remotion").join("render.mjs");
+    if script.exists() {
+      let node_out = Command::new("node")
+        .arg(script)
+        .arg(&output)
+        .arg(&overlay_out)
+        .arg(format!("{:.2}", duration_sec))
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+      if node_out.status.success() {
+        final_output = overlay_out;
+      }
+    }
   }
 
   sqlx::query(
     "INSERT INTO projects (input_path, output_path, prompt) VALUES (?, ?, ?)",
   )
   .bind(&input_path)
-  .bind(&output)
+  .bind(&final_output)
   .bind(&prompt)
   .execute(&db.0)
   .await
   .map_err(|e| e.to_string())?;
 
   Ok(VibeEditResult {
-    output_path: output,
+    output_path: final_output,
     filters,
     used_gemini,
     trial_watermark,
@@ -239,8 +308,16 @@ pub fn run() {
             .build(),
         )?;
       }
-      let pool =
-        tauri::async_runtime::block_on(init_db()).expect("failed to initialize database");
+      let db_path = app
+        .path()
+        .app_data_dir()
+        .expect("failed to resolve app data dir")
+        .join("vibe.db");
+      if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).expect("failed to create app data dir");
+      }
+      let pool = tauri::async_runtime::block_on(init_db(&db_path))
+        .expect("failed to initialize database");
       app.manage(Db(pool));
       Ok(())
     })

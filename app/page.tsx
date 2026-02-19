@@ -22,6 +22,7 @@ export default function Home() {
   const [videoSrc, setVideoSrc] = useState("");
   const [prompt, setPrompt] = useState("make energetic, punchy vibe");
   const [licenseKey, setLicenseKey] = useState("");
+  const [addOverlay, setAddOverlay] = useState(false);
   const [result, setResult] = useState<VibeEditResult | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState("");
@@ -83,9 +84,10 @@ export default function Home() {
     setIsProcessing(true);
     try {
       const response = await invoke<VibeEditResult>("vibe_edit", {
-        input_path: filePath,
+        inputPath: filePath,
         prompt,
-        license_key: licenseKey || null,
+        licenseKey: licenseKey || null,
+        addOverlay: addOverlay || null,
       });
       setResult(response);
     } catch (err) {
@@ -144,8 +146,17 @@ export default function Home() {
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
                 className="min-h-[120px] w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-rose-300 focus:outline-none"
-                placeholder="Describe the vibe (energetic, chill, action, remove boring)"
+                placeholder="Describe the vibe (e.g. energetic, add animation, transparent overlay)"
               />
+              <label className="flex items-center gap-2 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={addOverlay}
+                  onChange={(e) => setAddOverlay(e.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                Add Remotion animation/overlay on output
+              </label>
 
               <input
                 value={licenseKey}
@@ -173,7 +184,7 @@ export default function Home() {
             <div className="rounded-2xl border border-slate-200 bg-slate-950/90 p-3">
               <video
                 ref={videoRef}
-                src={videoSrc}
+                src={videoSrc || undefined}
                 controls
                 className="h-64 w-full rounded-xl bg-black object-contain"
               />

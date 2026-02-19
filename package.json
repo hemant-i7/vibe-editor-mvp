@@ -7,12 +7,16 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "remotion:render": "node remotion/render.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.7.0",
     "@tauri-apps/plugin-dialog": "^2.5.0",
+    "@remotion/bundler": "^4.0.0",
+    "@remotion/renderer": "^4.0.0",
     "next": "16.1.6",
+    "remotion": "^4.0.0",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
